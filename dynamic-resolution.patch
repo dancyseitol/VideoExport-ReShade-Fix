@@ -1,0 +1,76 @@
+diff --git a/VideoExport.Core/ScreenshotPlugins/ReshadeAPI.cs b/VideoExport.Core/ScreenshotPlugins/ReshadeAPI.cs
+index 0a6414d..8abd763 100644
+--- a/VideoExport.Core/ScreenshotPlugins/ReshadeAPI.cs
++++ b/VideoExport.Core/ScreenshotPlugins/ReshadeAPI.cs
+@@ -1,5 +1,4 @@
+ ﻿using System;
+-
+ using System.Runtime.InteropServices;
+ using UnityEngine;
+ 
+@@ -141,6 +140,36 @@ namespace VideoExport.ScreenshotPlugins
+             return _initialized && _shmFile != IntPtr.Zero && _shm != IntPtr.Zero;
+         }
+ 
++        // Dynamic-resolution fix: read only the 12-byte shared-memory header.
++        // This avoids copying the frame just to discover its dimensions.
++        public static bool TryGetCaptureSize(out int width, out int height)
++        {
++            width = 0;
++            height = 0;
++
++            if (!IsAvailable())
++                return false;
++
++            try
++            {
++                Screenshot screenshot = (Screenshot)Marshal.PtrToStructure(_shm, typeof(Screenshot));
++
++                if (screenshot.width == 0 || screenshot.height == 0 || screenshot.channels == 0)
++                    return false;
++
++                width = checked((int)screenshot.width);
++                height = checked((int)screenshot.height);
++                return true;
++            }
++            catch (Exception ex)
++            {
++                VideoExport.Logger.LogWarning($"Failed to read KKReshade capture size, falling back to Unity Screen size: {ex.Message}");
++                width = 0;
++                height = 0;
++                return false;
++            }
++        }
++
+         public static Texture2D RequestScreenshot(bool removeAlpha, bool vFlip)
+         {
+             Screenshot screenshot = (Screenshot)Marshal.PtrToStructure(_shm, typeof(Screenshot));
+diff --git a/VideoExport.Core/ScreenshotPlugins/ReshadePlugin.cs b/VideoExport.Core/ScreenshotPlugins/ReshadePlugin.cs
+index 36ae17f..b573e76 100644
+--- a/VideoExport.Core/ScreenshotPlugins/ReshadePlugin.cs
++++ b/VideoExport.Core/ScreenshotPlugins/ReshadePlugin.cs
+@@ -15,9 +15,22 @@ namespace VideoExport.ScreenshotPlugins
+         {
+             get
+             {
+-                int width = Mathf.RoundToInt(Screen.width);
+-                int height = Mathf.RoundToInt(Screen.height);
++                // Dynamic-resolution fix:
++                // ReShade captures the actual swapchain/backbuffer, which can differ
++                // from Unity's Screen.width/Screen.height (e.g. ultrawide fullscreen,
++                // DSR/DLDSR, borderless scaling). Ask KKReshade for the dimensions of
++                // the frame it is actually placing in shared memory.
++                int width;
++                int height;
++
++                if (!ReshadeAPI.TryGetCaptureSize(out width, out height))
++                {
++                    // Safe fallback for startup / addon not ready yet.
++                    width = Mathf.RoundToInt(Screen.width);
++                    height = Mathf.RoundToInt(Screen.height);
++                }
+ 
++                // Most yuv420p encoders require even dimensions.
+                 if (width % 2 != 0)
+                     width += 1;
+                 if (height % 2 != 0)
